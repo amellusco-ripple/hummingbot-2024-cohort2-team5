@@ -592,6 +592,10 @@ class PositionExecutor(ExecutorBase):
             self._close_order = self._take_profit_limit_order
             self.cancel_open_orders()
             self._status = RunnableStatus.SHUTTING_DOWN
+        elif self._open_order and self._open_order.order_id == event.order_id:
+            # Alex M: if the order is fully filled need to terminate the position executor
+            logging.getLogger().info(f"Received order completed event {event} terminating executor for order id = {event.order_id}")
+            self._status = RunnableStatus.TERMINATED
 
     def process_order_filled_event(self, _, market, event: OrderFilledEvent):
         """

@@ -407,8 +407,9 @@ class ClientOrderTracker:
         if prev_executed_amount_base < tracked_order.executed_amount_base:
             self.logger().info(
                 f"The {tracked_order.trade_type.name.upper()} order {tracked_order.client_order_id} "
+                f"status {tracked_order.current_state} "
                 f"amounting to {tracked_order.executed_amount_base}/{tracked_order.amount} "
-                f"{tracked_order.base_asset} has been filled."
+                f"{tracked_order.base_asset} @ {tracked_order.price:.8f} has been filled (with {len(tracked_order.order_fills)} fills)."
             )
             self._trigger_filled_event(
                 order=tracked_order,
