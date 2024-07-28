@@ -5,20 +5,16 @@ from typing import Dict, List, Optional, Set, Tuple
 from pydantic import Field
 
 from hummingbot.client.config.config_data_types import ClientFieldData
-from hummingbot.core.data_type.common import TradeType
+from hummingbot.core.data_type.common import OrderType, TradeType
 from hummingbot.core.rate_oracle.rate_oracle import RateOracle
 from hummingbot.data_feed.candles_feed.data_types import CandlesConfig
-from hummingbot.strategy.__utils__.trailing_indicators.instant_volatility import InstantVolatilityIndicator
-from hummingbot.strategy_v2.controllers.market_making_controller_base import (
-    MarketMakingControllerBase,
-    MarketMakingControllerConfigBase,
-)
-from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig
-from hummingbot.strategy_v2.models.executor_actions import ExecutorAction, StopExecutorAction
+from hummingbot.strategy_v2.controllers import ControllerBase, ControllerConfigBase
+from hummingbot.strategy_v2.executors.position_executor.data_types import PositionExecutorConfig, TripleBarrierConfig
+from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction, ExecutorAction, StopExecutorAction
 from hummingbot.strategy_v2.models.executors import CloseType
 
 
-class PMMFairPriceConfig(MarketMakingControllerConfigBase):
+class PMMFairPriceConfig(ControllerConfigBase):
     controller_name = "pmm_fair_price"
     # As this controller is a simple version of the PMM, we are not using the candles feed
     candles_config: List[CandlesConfig] = Field(default=[], client_data=ClientFieldData(prompt_on_new=False))
@@ -68,6 +64,38 @@ class PMMFairPriceConfig(MarketMakingControllerConfigBase):
             is_updatable=True,
             prompt_on_new=True,
             prompt=lambda mi: "Enable/Disable Live Order Placement: "))
+    executor_refresh_time: int = Field(
+        default=60 * 5,
+        client_data=ClientFieldData(
+            is_updatable=True,
+            prompt_on_new=True,
+            prompt=lambda mi: "Enter the refresh time in seconds for executors (e.g., 300 for 5 minutes):"))
+    cooldown_time: int = Field(
+        default=15,
+        client_data=ClientFieldData(
+            is_updatable=True,
+            prompt_on_new=False,
+            prompt=lambda
+            mi: "Specify the cooldown time in seconds between after replacing an executor that traded (e.g., 15):"))
+    quote_base_amount: float = Field(
+        default=0.1,
+        client_data=ClientFieldData(
+            is_updatable=True,
+            prompt_on_new=True,
+            prompt=lambda mi: "Total base amount to quote on both sides: "))
+
+    @property
+    def triple_barrier_config(self) -> TripleBarrierConfig:
+        return TripleBarrierConfig(
+            stop_loss=None,
+            take_profit=None,
+            time_limit=None,
+            trailing_stop=None,
+            open_order_type=OrderType.LIMIT,  # Defaulting to LIMIT as is a Maker Controller
+            take_profit_order_type=OrderType.MARKET,
+            stop_loss_order_type=OrderType.MARKET,  # Defaulting to MARKET as per requirement
+            time_limit_order_type=OrderType.MARKET  # Defaulting to MARKET as per requirement
+        )
 
     def update_markets(self, markets: Dict[str, Set[str]]) -> Dict[str, Set[str]]:
         if self.maker_connector_name not in markets:
@@ -79,20 +107,51 @@ class PMMFairPriceConfig(MarketMakingControllerConfigBase):
         return markets
 
 
-class PMMFairPriceController(MarketMakingControllerBase):
+class PMMFairPriceController(ControllerBase):
 
     def __init__(self, config: PMMFairPriceConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
-
-        lookback = 10
-        self.avg_vol = InstantVolatilityIndicator(sampling_length=lookback)
         self.taker_info = ""
         self.maker_info = ""
         self.info_1 = ""
         self.info_2 = ""
         self.quote_bid = Decimal(0)
         self.quote_ask = Decimal(0)
+
+    def determine_executor_actions(self) -> List[ExecutorAction]:
+        """
+        Determine actions based on the provided executor handler report.
+        """
+        actions = []
+        actions.extend(self.create_actions_proposal())
+        actions.extend(self.stop_actions_proposal())
+        return actions
+
+    def create_actions_proposal(self) -> List[ExecutorAction]:
+        """
+        Create actions proposal based on the current state of the controller.
+        """
+        create_actions = []
+        levels_to_execute = self.get_levels_to_execute()
+        for level_id in levels_to_execute:
+            price, amount = self.get_price_and_amount(level_id)
+            executor_config = self.get_executor_config(level_id, price, amount)
+            if executor_config is not None:
+                create_actions.append(CreateExecutorAction(
+                    controller_id=self.config.id,
+                    executor_config=executor_config
+                ))
+        return create_actions
+
+    def stop_actions_proposal(self) -> List[ExecutorAction]:
+        """
+        Create a list of actions to stop the executors based on order refresh and early stop conditions.
+        """
+        stop_actions = []
+        stop_actions.extend(self.executors_to_refresh())
+        stop_actions.extend(self.executors_to_early_stop())
+        return stop_actions
 
     async def update_processed_data(self):
         # conversion_rate = Decimal("0.5965")
@@ -105,7 +164,8 @@ class PMMFairPriceController(MarketMakingControllerBase):
             conversion_rate = Decimal(str(rate))
         # print(conversion_rate)
 
-        taker_order_book = self.market_data_provider.get_order_book(self.config.taker_connector_name, self.config.taker_trading_pair)
+        taker_order_book = self.market_data_provider.get_order_book(self.config.taker_connector_name,
+                                                                    self.config.taker_trading_pair)
 
         taker_bid = list(taker_order_book.bid_entries())[:1][0].price
         taker_bid_vol = list(taker_order_book.bid_entries())[:1][0].amount
@@ -135,7 +195,8 @@ class PMMFairPriceController(MarketMakingControllerBase):
 
         taker_vwap_mid = (taker_vwap_bid + taker_vwap_ask) / Decimal("2.0")
 
-        maker_order_book = self.market_data_provider.get_order_book(self.config.maker_connector_name, self.config.maker_trading_pair)
+        maker_order_book = self.market_data_provider.get_order_book(self.config.maker_connector_name,
+                                                                    self.config.maker_trading_pair)
 
         maker_bid = list(maker_order_book.bid_entries())[:1][0].price
         maker_bid_vol = list(maker_order_book.bid_entries())[:1][0].amount
@@ -209,15 +270,17 @@ class PMMFairPriceController(MarketMakingControllerBase):
 
         # logging.getLogger().info(f"quote bid {self.quote_bid} ask {self.quote_ask}")
 
-        self.processed_data = {"reference_price": Decimal(ref_price), "spread_multiplier": Decimal("1"), "quote_bid": self.quote_bid, "quote_ask": self.quote_ask}
+        self.processed_data = {"reference_price": Decimal(ref_price), "spread_multiplier": Decimal("1"),
+                               "quote_bid": self.quote_bid, "quote_ask": self.quote_ask}
 
     def get_price_and_amount(self, level_id: str) -> Tuple[Decimal, Decimal]:
         """
         Get the spread and amount in quote for a given level id.
         """
         trade_type = self.get_trade_type_from_level_id(level_id)
-        order_price = self.processed_data["quote_bid"] if trade_type == TradeType.BUY else self.processed_data["quote_ask"]
-        return order_price, Decimal("0.1")
+        order_price = self.processed_data["quote_bid"] if trade_type == TradeType.BUY else self.processed_data[
+            "quote_ask"]
+        return order_price, Decimal(str(self.config.quote_base_amount))
 
     def get_levels_to_execute(self) -> List[str]:
         working_levels = self.filter_executors(
@@ -226,6 +289,18 @@ class PMMFairPriceController(MarketMakingControllerBase):
         )
         working_levels_ids = [executor.custom_info["level_id"] for executor in working_levels]
         return self.get_not_active_levels_ids(working_levels_ids)
+
+    def get_level_id_from_side(self, trade_type: TradeType, level: int) -> str:
+        """
+        Get the level id based on the trade type and the level.
+        """
+        return f"{trade_type.name.lower()}_{level}"
+
+    def get_trade_type_from_level_id(self, level_id: str) -> TradeType:
+        return TradeType.BUY if level_id.startswith("buy") else TradeType.SELL
+
+    def get_level_from_level_id(self, level_id: str) -> int:
+        return int(level_id.split('_')[1])
 
     def get_not_active_levels_ids(self, active_levels_ids: List[str]) -> List[str]:
         """
@@ -256,6 +331,24 @@ class PMMFairPriceController(MarketMakingControllerBase):
             controller_id=self.config.id,
             executor_id=executor.id) for executor in executors_to_refresh]
 
+    def executors_to_refresh(self) -> List[ExecutorAction]:
+        executors_to_refresh = self.filter_executors(
+            executors=self.executors_info,
+            filter_func=lambda
+            x: not x.is_trading and x.is_active and self.market_data_provider.time() - x.timestamp > self.config.executor_refresh_time)
+
+        if len(executors_to_refresh) > 0:
+            # if any executor needs refreshing - refresh all the active executors
+            logging.getLogger().info(
+                f"will refresh all executors as {self.config.executor_refresh_time} seconds have elapsed")
+            executors_to_refresh = self.filter_executors(
+                executors=self.executors_info,
+                filter_func=lambda x: x.is_active)
+
+        return [StopExecutorAction(
+            controller_id=self.config.id,
+            executor_id=executor.id) for executor in executors_to_refresh]
+
     def get_executor_config(self, level_id: str, price: Decimal, amount: Decimal):
         trade_type = self.get_trade_type_from_level_id(level_id)
         return PositionExecutorConfig(
@@ -266,7 +359,7 @@ class PMMFairPriceController(MarketMakingControllerBase):
             entry_price=price,
             amount=amount,
             triple_barrier_config=self.config.triple_barrier_config,
-            leverage=self.config.leverage,
+            leverage=1,
             side=trade_type,
         )
 

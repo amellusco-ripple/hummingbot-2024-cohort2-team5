@@ -309,9 +309,10 @@ class PositionExecutor(ExecutorBase):
                 self.cancel_close_order()
                 self._current_retries += 1
         else:
-            self.logger().info(f"Open amount: {self.open_filled_amount}, Close amount: {self.close_filled_amount}")
-            self.place_close_order_and_cancel_open_orders(close_type=self.close_type)
             self._current_retries += 1
+            # self.logger().info(f"Open amount: {self.open_filled_amount}, Close amount: {self.close_filled_amount}")
+            # self.place_close_order_and_cancel_open_orders(close_type=self.close_type)
+            # self._current_retries += 1
         await asyncio.sleep(2.0)
 
     def evaluate_max_retries(self):
@@ -411,23 +412,23 @@ class PositionExecutor(ExecutorBase):
         :param price: The price to be used in the close order.
         :return: None
         """
-        delta_amount_to_close = self.open_filled_amount - self.close_filled_amount
-        trading_rules = self.get_trading_rules(self.config.connector_name, self.config.trading_pair)
+        # delta_amount_to_close = self.open_filled_amount - self.close_filled_amount
+        # trading_rules = self.get_trading_rules(self.config.connector_name, self.config.trading_pair)
         self.cancel_open_orders()
-        if delta_amount_to_close > trading_rules.min_order_size:
-            order_id = self.place_order(
-                connector_name=self.config.connector_name,
-                trading_pair=self.config.trading_pair,
-                order_type=OrderType.MARKET,
-                amount=delta_amount_to_close,
-                price=price,
-                side=TradeType.SELL if self.config.side == TradeType.BUY else TradeType.BUY,
-                position_action=PositionAction.CLOSE,
-            )
-            self._close_order = TrackedOrder(order_id=order_id)
-            self.logger().debug(f"Placing close order --> Filled amount: {self.open_filled_amount}")
-        self.close_type = close_type
-        self.close_timestamp = self._strategy.current_timestamp
+        # if delta_amount_to_close > trading_rules.min_order_size:
+        #     order_id = self.place_order(
+        #         connector_name=self.config.connector_name,
+        #         trading_pair=self.config.trading_pair,
+        #         order_type=OrderType.MARKET,
+        #         amount=delta_amount_to_close,
+        #         price=price,
+        #         side=TradeType.SELL if self.config.side == TradeType.BUY else TradeType.BUY,
+        #         position_action=PositionAction.CLOSE,
+        #     )
+        #     self._close_order = TrackedOrder(order_id=order_id)
+        #     self.logger().debug(f"Placing close order --> Filled amount: {self.open_filled_amount}")
+        # self.close_type = close_type
+        # self.close_timestamp = self._strategy.current_timestamp
         self._status = RunnableStatus.SHUTTING_DOWN
 
     def cancel_open_orders(self):
