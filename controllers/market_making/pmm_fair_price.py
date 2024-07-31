@@ -133,8 +133,11 @@ class PMMFairPriceController(ControllerBase):
         self.maker_info = ""
         self.info_1 = ""
         self.info_2 = ""
+        self.info_3 = ""
         self.quote_bid = Decimal(0)
         self.quote_ask = Decimal(0)
+        self.initial_base_balance = Decimal(0)
+        self.initial_quote_balance = Decimal(0)
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         """
@@ -181,6 +184,19 @@ class PMMFairPriceController(ControllerBase):
             conversion_rate = Decimal(str(rate))
         # print(conversion_rate)
 
+        balances = self.market_data_provider.get_connector(self.config.taker_connector_name).get_all_balances()
+        base_ccy = self.config.taker_trading_pair.split("-")[0]
+        base_balance = balances.get(base_ccy)
+        quote_ccy = self.config.taker_trading_pair.split("-")[1]
+        quote_balance = balances.get(quote_ccy)
+
+        if self.initial_base_balance.is_zero():
+            self.initial_base_balance = base_balance
+            logging.getLogger(f"Initial base balance = {self.initial_base_balance} {base_ccy}")
+        if self.initial_quote_balance.is_zero():
+            self.initial_quote_balance = quote_balance
+            logging.getLogger(f"Initial quote balance = {self.initial_quote_balance} {quote_ccy}")
+
         taker_order_book: OrderBook = self.market_data_provider.get_order_book(self.config.taker_connector_name,
                                                                                self.config.taker_trading_pair)
 
@@ -195,6 +211,11 @@ class PMMFairPriceController(ControllerBase):
                            f"\nask {taker_ask:.8f} {taker_ask_vol}"
                            f"\nbid {taker_bid:.8f} {taker_bid_vol}"
                            f"\nspread {taker_spread:.8f} {taker_spread_pct:%}")
+
+        base_diff = base_balance - self.initial_base_balance
+        quote_diff = quote_balance - self.initial_quote_balance
+        self.info_3 = (f"\nStarting base {base_ccy} {self.initial_base_balance:.8f} Current {base_balance:.8f} ({base_diff} {base_ccy} {base_diff * Decimal(str(taker_mid))} {quote_ccy} {((base_diff) / self.initial_base_balance):.3%})"
+                       f"\nStarting quote {quote_ccy} {self.initial_quote_balance:.8f} Current {quote_balance:.8f} ({quote_diff} {quote_ccy} {((quote_diff) / self.initial_quote_balance):.3%})")
 
         taker_vwap_ask = Decimal(str(self.market_data_provider.get_price_for_volume(self.config.taker_connector_name,
                                                                                     self.config.taker_trading_pair,
@@ -433,7 +454,7 @@ class PMMFairPriceController(ControllerBase):
 
     def to_format_status(self) -> list[str]:
         lines = []
-        lines.extend([self.taker_info, self.maker_info, self.info_1, self.info_2])
+        lines.extend([self.taker_info, self.maker_info, self.info_1, self.info_2, self.info_3])
         # for executor in self.executors_info:
         #     lines.extend([str(executor)])
         return lines
