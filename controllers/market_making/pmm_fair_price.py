@@ -85,14 +85,6 @@ class PMMFairPriceConfig(ControllerConfigBase):
             prompt_on_new=True,
             prompt=lambda mi: "Total base amount to quote on both sides: "))
 
-    quote_min_tick: Decimal = Field(
-        default=0.00001,
-        client_data=ClientFieldData(
-            is_updatable=True,
-            prompt=lambda e: "Enter the min tick size for the quote asset: ",
-            prompt_on_new=True
-        ))
-
     pct_spread_max_taker_price_improvement: Decimal = Field(
         default=0.25,
         client_data=ClientFieldData(
@@ -133,6 +125,8 @@ class PMMFairPriceController(ControllerBase):
         self.maker_info = ""
         self.info_1 = ""
         self.info_2 = ""
+        self.info_ask = ""
+        self.info_bid = ""
         self.info_3 = ""
         self.quote_bid = Decimal(0)
         self.quote_ask = Decimal(0)
@@ -208,14 +202,14 @@ class PMMFairPriceController(ControllerBase):
         taker_spread_pct = taker_spread / taker_mid
 
         self.taker_info = (f"\n== {self.config.taker_connector_name} {self.config.taker_trading_pair} =="
-                           f"\nask {taker_ask:.8f} {taker_ask_vol}"
-                           f"\nbid {taker_bid:.8f} {taker_bid_vol}"
-                           f"\nspread {taker_spread:.8f} {taker_spread_pct:%}")
+                           f"\nask {taker_ask:.6f} {taker_ask_vol:.6f}"
+                           f"\nbid {taker_bid:.6f} {taker_bid_vol:.6f}"
+                           f"\nspread {taker_spread:.6f} {taker_spread_pct:%}")
 
         base_diff = base_balance - self.initial_base_balance
         quote_diff = quote_balance - self.initial_quote_balance
-        self.info_3 = (f"\nStarting base {base_ccy} {self.initial_base_balance:.8f} Current {base_balance:.8f} ({base_diff} {base_ccy} {base_diff * Decimal(str(taker_mid))} {quote_ccy} {((base_diff) / self.initial_base_balance):.3%})"
-                       f"\nStarting quote {quote_ccy} {self.initial_quote_balance:.8f} Current {quote_balance:.8f} ({quote_diff} {quote_ccy} {((quote_diff) / self.initial_quote_balance):.3%})")
+        self.info_3 = (f"\nStarting base {base_ccy} {self.initial_base_balance:.6f} Current {base_balance:.6f} ({base_diff:.6f} {base_ccy} {(base_diff * Decimal(str(taker_mid))):.6f} {quote_ccy} {((base_diff) / self.initial_base_balance):.3%})"
+                       f"\nStarting quote {quote_ccy} {self.initial_quote_balance:.6f} Current {quote_balance:.6f} ({quote_diff:.6f} {quote_ccy} {((quote_diff) / self.initial_quote_balance):.3%})")
 
         taker_vwap_ask = Decimal(str(self.market_data_provider.get_price_for_volume(self.config.taker_connector_name,
                                                                                     self.config.taker_trading_pair,
@@ -243,10 +237,10 @@ class PMMFairPriceController(ControllerBase):
         maker_spread_pct = maker_spread / maker_mid
 
         self.maker_info = (f"\n== {self.config.maker_connector_name} {self.config.maker_trading_pair} =="
-                           f"\nask {maker_ask:.8f} ({(Decimal(maker_ask) / conversion_rate):.8f}) {maker_ask_vol:.8f}"
-                           f"\nbid {maker_bid:.8f} ({(Decimal(maker_mid) / conversion_rate):.8f}) {maker_bid_vol:.8f}"
-                           f"\nspread {maker_spread:.8f} {maker_spread_pct:%}"
-                           f"\n{self.config.taker_conversion_pair} conversion rate {conversion_rate:.8f}")
+                           f"\nask {maker_ask:.6f} ({(Decimal(maker_ask) / conversion_rate):.6f}*) {maker_ask_vol:.6f}"
+                           f"\nbid {maker_bid:.6f} ({(Decimal(maker_bid) / conversion_rate):.6f}*) {maker_bid_vol:.6f}"
+                           f"\nspread {maker_spread:.6f} {maker_spread_pct:%}"
+                           f"\n*{self.config.taker_conversion_pair} conversion rate {conversion_rate:.6f}")
 
         maker_vwap_ask = Decimal(
             str(self.market_data_provider.get_price_for_volume(self.config.maker_connector_name,
@@ -267,11 +261,10 @@ class PMMFairPriceController(ControllerBase):
         q_ask = maker_vwap_mid * (Decimal("1.0") + (Decimal(maker_spread_pct) / Decimal("2.0")))
 
         self.info_1 = (f"\n== vwap =="
-                       f"\ntaker vwap mid {taker_vwap_mid:.8f}"
-                       f"\nmaker vwap mid {maker_vwap_mid:.8f}"
-                       f"\ndiff {diff:.8f} {pct_diff:.8%}")
+                       f"\ntaker vwap mid {taker_vwap_mid:.6f} (vs simple mid {taker_mid:.6f})"
+                       f"\nmaker vwap mid {maker_vwap_mid:.6f} (vs simple mid {(Decimal(maker_mid) / conversion_rate):.6f}*)"
+                       f"\ndiff {diff:.6f} {pct_diff:.8%}")
 
-        # TODO alexm ideally this price quantizing would be done by market connector
         q_bid = self.quantize_price(q_bid)
         q_ask = self.quantize_price(q_ask)
 
@@ -281,58 +274,76 @@ class PMMFairPriceController(ControllerBase):
         max_taker_bid = self.quantize_price(max_taker_bid)
         max_taker_ask = self.quantize_price(max_taker_ask)
 
-        if q_bid > max_taker_bid:
-            self.quote_bid = Decimal(str(max_taker_bid))
-            new_mid = self.quote_bid / (Decimal("1.0") - (Decimal(maker_spread_pct) / Decimal("2.0")))
-            self.quote_ask = new_mid * (Decimal("1.0") + (Decimal(maker_spread_pct) / Decimal("2.0")))
-            self.quote_ask = self.quantize_price(self.quote_ask)
-            self.info_2 = (f"\n== quoting join best bid =="
-                           f"\ntaker ask {taker_ask:.8f}"
-                           f"\nquote ask [{self.quote_ask:.8f} ({self.quote_ask_diff()})]"
-                           f"\n--"
-                           f"\nquote bid [{self.quote_bid:.8f} ({self.quote_bid_diff()})] < computed {q_bid:.8f}")
-        elif q_ask < max_taker_ask:
-            self.quote_ask = Decimal(str(max_taker_ask))
-            new_mid = self.quote_ask / (Decimal("1.0") + (Decimal(maker_spread_pct) / Decimal("2.0")))
-            self.quote_bid = new_mid * (Decimal("1.0") - (Decimal(maker_spread_pct) / Decimal("2.0")))
-            self.quote_bid = self.quantize_price(self.quote_bid)
+        self.quote_ask = max(q_ask, max_taker_ask)
+        self.info_ask = (f"\n== ASK QUOTE =="
+                         f"\ntaker ask {taker_ask:.6f}"
+                         f"\nbest  ask {max_taker_ask:.6f} (taker ask - price improvement)"
+                         f"\ncalc  ask {q_ask:.6f}"
+                         f"\nFINAL ask {self.quote_ask:.6f} (max best vs calc)"
+                         f"\n==============="
+                         f"\n{self.quote_ask_diff()}"
+                         )
 
-            self.info_2 = (f"\n== quoting join best ask =="
-                           f"\nquote ask [{self.quote_ask:.8f} ({self.quote_ask_diff()})] > computed {q_ask:.8f}"
-                           f"\n--"
-                           f"\nquote bid [{self.quote_bid:.8f}] ({self.quote_bid_diff()})"
-                           f"\ntaker bid {taker_bid:.8f}")
-        else:
-            self.quote_bid = q_bid
-            self.quote_ask = q_ask
-            self.info_2 = (f"\n== quoting within spread =="
-                           f"\ntaker ask [{taker_ask:.8f}]"
-                           f"\nquote ask [{self.quote_ask:.8f} ({self.quote_ask_diff()})]"
-                           f"\n--"
-                           f"\nquote bid [{self.quote_bid:.8f} ({self.quote_bid_diff()})]"
-                           f"\ntaker bid {taker_bid:.8f}")
+        self.quote_bid = min(q_bid, max_taker_bid)
+        self.info_bid = (f"\n{self.quote_bid_diff()}"
+                         f"\n==============="
+                         f"\nFINAL bid {self.quote_bid:.6f} (min best vs calc)"
+                         f"\ncalc  bid {q_bid:.6f}"
+                         f"\nbest  bid {max_taker_bid:.6f} (taker bid + price improvement)"
+                         f"\ntaker bid {taker_bid:.6f}"
+                         f"\n== BID QUOTE =="
+                         )
 
-        # logging.getLogger().info(f"quote bid {self.quote_bid} ask {self.quote_ask}")
+        # if q_bid > max_taker_bid:
+        #     self.quote_bid = Decimal(str(max_taker_bid))
+        #     new_mid = self.quote_bid / (Decimal("1.0") - (Decimal(maker_spread_pct) / Decimal("2.0")))
+        #     self.quote_ask = new_mid * (Decimal("1.0") + (Decimal(maker_spread_pct) / Decimal("2.0")))
+        #     self.quote_ask = self.quantize_price(self.quote_ask)
+        #     self.info_2 = (f"\n== quoting join best bid =="
+        #                    f"\ntaker ask {taker_ask:.6f}"
+        #                    f"\nquote ask [{self.quote_ask:.6f} ({self.quote_ask_diff()})]"
+        #                    f"\n--"
+        #                    f"\nquote bid [{self.quote_bid:.6f} ({self.quote_bid_diff()})] < computed {q_bid:.6f}")
+        # elif q_ask < max_taker_ask:
+        #     self.quote_ask = Decimal(str(max_taker_ask))
+        #     new_mid = self.quote_ask / (Decimal("1.0") + (Decimal(maker_spread_pct) / Decimal("2.0")))
+        #     self.quote_bid = new_mid * (Decimal("1.0") - (Decimal(maker_spread_pct) / Decimal("2.0")))
+        #     self.quote_bid = self.quantize_price(self.quote_bid)
+        #
+        #     self.info_2 = (f"\n== quoting join best ask =="
+        #                    f"\nquote ask [{self.quote_ask:.6f} ({self.quote_ask_diff()})] > computed {q_ask:.6f}"
+        #                    f"\n--"
+        #                    f"\nquote bid [{self.quote_bid:.6f} ({self.quote_bid_diff()})]"
+        #                    f"\ntaker bid {taker_bid:.6f}")
+        # else:
+        #     self.quote_bid = q_bid
+        #     self.quote_ask = q_ask
+        #     self.info_2 = (f"\n== quoting within spread =="
+        #                    f"\ntaker ask [{taker_ask:.6f}]"
+        #                    f"\nquote ask [{self.quote_ask:.6f} ({self.quote_ask_diff()})]"
+        #                    f"\n--"
+        #                    f"\nquote bid [{self.quote_bid:.6f} ({self.quote_bid_diff()})]"
+        #                    f"\ntaker bid {taker_bid:.6f}")
 
         self.processed_data = {"quote_bid": self.quote_bid, "quote_ask": self.quote_ask}
 
     def quote_bid_diff(self) -> str:
         our_bid, our_bid_amount = self.get_current_order_price_and_amount(TradeType.BUY)
         if our_bid is None or self.quote_bid.is_zero():
-            return "no bid"
+            return "no current bid"
         else:
-            return f"our bid {our_bid} {((our_bid - self.quote_bid) / self.quote_bid):.3%}"
+            return f"exist bid {our_bid} {((our_bid - self.quote_bid) / self.quote_bid):.3%}"
 
     def quote_ask_diff(self) -> str:
         our_ask, our_ask_amount = self.get_current_order_price_and_amount(TradeType.SELL)
         if our_ask is None or self.quote_ask.is_zero():
-            return "no ask"
+            return "no current ask"
         else:
-            return f"our ask {our_ask} {((our_ask - self.quote_ask) / self.quote_ask):.3%}"
+            return f"exist ask {our_ask} {((our_ask - self.quote_ask) / self.quote_ask):.3%}"
 
     def quantize_price(self, price: Decimal) -> Decimal:
-        # return (price // self.config.quote_min_tick) * self.config.quote_min_tick
-        return price.quantize(Decimal(self.config.quote_min_tick))
+        return self.market_data_provider.get_connector(self.config.taker_connector_name).quantize_order_price(
+            self.config.taker_trading_pair, price)
 
     def get_taker_best_price_and_amount_excluding_own(self, order_book: OrderBook, trade_type: TradeType) -> tuple[
             float, float]:
@@ -454,7 +465,7 @@ class PMMFairPriceController(ControllerBase):
 
     def to_format_status(self) -> list[str]:
         lines = []
-        lines.extend([self.taker_info, self.maker_info, self.info_1, self.info_2, self.info_3])
+        lines.extend([self.taker_info, self.maker_info, self.info_1, self.info_2, self.info_ask, self.info_bid, self.info_3])
         # for executor in self.executors_info:
         #     lines.extend([str(executor)])
         return lines
