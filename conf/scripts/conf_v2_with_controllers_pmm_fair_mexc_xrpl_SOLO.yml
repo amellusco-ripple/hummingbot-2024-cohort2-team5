@@ -1,0 +1,7 @@
+markets: {}
+candles_config: []
+controllers_config:
+- conf_market_making.pmm_fair_price_mexc_xrpl_SOLO.yml
+config_update_interval: 5
+script_file_name: v2_with_controllers.py
+time_to_cash_out: null

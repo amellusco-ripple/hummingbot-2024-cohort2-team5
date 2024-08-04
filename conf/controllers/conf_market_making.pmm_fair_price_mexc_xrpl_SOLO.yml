@@ -1,0 +1,16 @@
+id: tjLD3YcSQTErRNLjFXbXymt2j9PWLB9Hx5abzQv375m
+controller_name: pmm_fair_price
+controller_type: market_making
+candles_config: []
+executor_refresh_time: 60
+cooldown_time: 15
+taker_connector_name: xrpl
+taker_trading_pair: SOLO-XRP
+taker_conversion_pair: XRP-USDT
+maker_connector_name: mexc
+maker_trading_pair: SOLO-USDT
+taker_base_amount: 25000.0
+maker_base_amount: 25000.0
+place_live_orders: false
+quote_base_amount: 0.5
+pct_spread_max_taker_price_improvement: 0.25
