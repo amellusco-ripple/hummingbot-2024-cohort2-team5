@@ -329,6 +329,10 @@ class InFlightOrder:
         self.current_state = order_update.new_state
         self.check_processed_by_exchange_condition()
 
+        # Alex M: override current if filled
+        if self.is_filled:
+            self.current_state = OrderState.FILLED
+
         updated: bool = prev_data != (self.exchange_order_id, self.current_state)
 
         if updated:
